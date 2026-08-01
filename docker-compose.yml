@@ -1,0 +1,57 @@
+# ============================================================
+# Microsoft Rewards 自动脚本 — ARM64/Podroid Docker 部署
+# 基于 chiihero/Microsoft-Rewards-Script (main)
+# 本文件为微调版: ①IPv6 禁用 ②build context 指向 ./src
+# 用法: 与 .env 同目录, docker compose up -d --build
+# ============================================================
+
+services:
+  microsoft-rewards:
+    build:
+      context: ./src
+      dockerfile: Dockerfile
+    image: microsoft-rewards:local
+    container_name: microsoft-rewards
+    restart: unless-stopped
+    volumes:
+      - ./config:/usr/src/microsoft-rewards-script/dist/config
+      - ./sessions:/usr/src/microsoft-rewards-script/dist/browser/sessions
+    environment:
+      TZ: "Asia/Shanghai"
+      NODE_ENV: 'production'
+      CRON_SCHEDULE: '0 3 * * *'
+      RUN_ON_START: 'true'
+      SKIP_RANDOM_SLEEP: 'false'
+      MIN_SLEEP_MINUTES: "0"
+      MAX_SLEEP_MINUTES: "30"
+      ACCOUNT_1_EMAIL: ${ACCOUNT_1_EMAIL}
+      ACCOUNT_1_PASSWORD: ${ACCOUNT_1_PASSWORD}
+      ACCOUNT_1_TOTP_SECRET: ${ACCOUNT_1_TOTP_SECRET:-}
+      ACCOUNT_1_GEO_LOCALE: ${ACCOUNT_1_GEO_LOCALE:-cn}
+      ACCOUNT_1_LANG_CODE: ${ACCOUNT_1_LANG_CODE:-zh}
+      # 多账号: 取消注释并递增编号
+      #ACCOUNT_2_EMAIL: ${ACCOUNT_2_EMAIL:-}
+      #ACCOUNT_2_PASSWORD: ${ACCOUNT_2_PASSWORD:-}
+      CONFIG_QUERY_ENGINES: 'china,local'
+      CONFIG_PUSHPLUS_ENABLED: ${PUSHPLUS_ENABLED:-false}
+      CONFIG_PUSHPLUS_TOKEN: ${PUSHPLUS_TOKEN:-}
+      CONFIG_PUSHPLUS_TEMPLATE: ${PUSHPLUS_TEMPLATE:-txt}
+      CONFIG_SEARCH_DELAY_MIN: '30sec'
+      CONFIG_SEARCH_DELAY_MAX: '1min'
+      CONFIG_CHINA_API_APPKEY: ${CHINA_API_APPKEY:-}
+
+    # ⚠️ 关键微调: 禁用 IPv6
+    # 设备无 IPv6 路由时 Chromium 等 IPv6 超时, 每个 CDN 资源慢 100 倍
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=1
+      - net.ipv6.conf.default.disable_ipv6=1
+
+    healthcheck:
+      test: ['CMD', 'sh', '-c', 'pgrep cron > /dev/null || exit 1']
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+    security_opt:
+      - no-new-privileges:true

@@ -1,0 +1,50 @@
+--- a/src/browser/auth/Login.ts
++++ b/src/browser/auth/Login.ts
+@@ -18,6 +18,7 @@
+     | 'SIGN_IN_ANOTHER_WAY_EMAIL'
+     | 'PASSKEY_ERROR'
+     | 'PASSKEY_VIDEO'
++    | 'PASSKEY_ENROLL'
+     | 'KMSI_PROMPT'
+     | 'LOGGED_IN'
+     | 'RECOVERY_EMAIL_INPUT'
+@@ -174,6 +175,18 @@
+             return 'ACCOUNT_LOCKED'
+         }
+ 
++        // 登录成功后微软可能弹出 passkey 注册引导页（interrupt/passkey/enroll 或 fido/create）
++        // 此时 cookie 已写入，登录已完成，直接导航回 rewards 即可
++        if (url.hostname === 'account.live.com' && url.pathname.includes('interrupt/passkey')) {
++            this.bot.logger.info(this.bot.isMobile, 'DETECT-STATE', '检测到 passkey 注册引导页，跳过并导航回 rewards');
++            await page.goto('https://rewards.bing.com/', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
++            return 'LOGGED_IN'
++        }
++        if (url.hostname === 'login.microsoft.com' && url.pathname.includes('fido')) {
++            this.bot.logger.info(this.bot.isMobile, 'DETECT-STATE', '检测到 fido 页面，导航回 rewards');
++            await page.goto('https://rewards.bing.com/', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
++            return 'LOGGED_IN'
++        }
+         if (url.hostname === 'rewards.bing.com' || url.hostname === 'account.microsoft.com') {
+             this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', '在奖励/账户页面，假设已登录')
+             return 'LOGGED_IN'
+@@ -276,7 +289,7 @@
+ 
+     private async checkSelector(page: Page, selector: string): Promise<boolean> {
+         return page
+-            .waitForSelector(selector, { state: 'visible', timeout: 200 })
++            .waitForSelector(selector, { state: 'visible', timeout: 5000 })
+             .then(() => true)
+             .catch(() => false)
+     }
+@@ -484,6 +497,11 @@
+                 return true
+             }
+ 
++            case 'PASSKEY_ENROLL': {
++                this.bot.logger.info(this.bot.isMobile, 'LOGIN', '处理 passkey 注册引导页，导航回 rewards');
++                await page.goto('https://rewards.bing.com/', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
++                return true
++            }
+             case 'PASSKEY_VIDEO':
+             case 'PASSKEY_ERROR': {
+                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', '跳过Passkey提示')
