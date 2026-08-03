@@ -59,6 +59,27 @@
 
 ---
 
+
+#### 坑 4：外部注入桌面会话 → 搜索 0 分（UA/指纹不匹配）
+
+- **症状**：从可信浏览器（Playwright MCP）登录导出 cookies 注入 session_desktop.json 后，桌面端登录成功（LOGGED_IN）、搜索正常提交，但**计分恒为 0**；容器自签会话的实例则 51/51 正常
+- **诊断**：排除 cookie 域（.msn.cn SID）、IP 绑定（MSCC 相同）后，用签发浏览器同会话搜索 +3 分 → 会话有效；容器注入签发 UA 后计分恢复 → **Bing 校验「搜索请求 UA」与「SID 签发 UA」一致**
+- **根因**：容器默认用 fingerprint-injector 随机指纹 UA（Edg 系），与外部签发会话的 UA（Chrome/150 系）不一致
+- **修复**：① 容器内 fingerprint-generator 生成指纹并覆盖 UA 为签发 UA → session_fingerprint_desktop.json；② entrypoint.sh 改 saveFingerprint.desktop: true（**重建容器会还原**）；③ 会话含双域 SID（登录后访问 www.msn.cn 触发 .msn.cn 域 SID）
+- **验证**：桌面 UA 日志与签发 UA 一致 → 搜索 获得积分=3 points → 51/51 全拿
+- 完整流程见 docs/desktop-session-fingerprint.md
+
+## 🧰 补丁（patches/）
+
+- login.patch：passkey 注册引导页跳过 + checkSelector 超时 5000ms（旧）
+- ixes-20260803.patch：**2026-08-03 累计修复**（基于上游 v3.1.6.4 打补丁后即得当前部署源码）：
+  - OAuth 重试循环重构（break 条件精确化、removed 快速重试、MobileAccessLoginError 异常体系、轮询提前失败检测）
+  - verifyBingSession（60s 轮硬截止、domcontentloaded、loopMax 3、双重验证去重）
+  - 搜索时序（networkidle 等待恢复、URL 直接搜索兜底、提交后 URL 日志）
+  - ghostClick 加固（悬空 rejection 吞掉、context 错误降级、25s 超时）
+  - unhandledRejection 分类（Protocol error 全族仅记录不退出）
+  - Login 入口保留 createuser + oauth20_desktop.srf 带 code 判定 LOGGED_IN
+  - 应用：cd <repo> && git apply -p2 patches/fixes-20260803.patch
 ## 🚀 快速开始（一条命令）
 
 ```sh

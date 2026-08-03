@@ -1,8 +1,8 @@
 # ============================================================
-# Microsoft Rewards 自动脚本 — ARM64/Podroid Docker 部署
-# 基于 chiihero/Microsoft-Rewards-Script (main)
-# 本文件为微调版: ①IPv6 禁用 ②build context 指向 ./src
-# 用法: 与 .env 同目录, docker compose up -d --build
+# Microsoft Rewards 鑷姩鑴氭湰 鈥?ARM64/Podroid Docker 閮ㄧ讲
+# 鍩轰簬 chiihero/Microsoft-Rewards-Script (main)
+# 鏈枃浠朵负寰皟鐗? 鈶營Pv6 绂佺敤 鈶uild context 鎸囧悜 ./src
+# 鐢ㄦ硶: 涓?.env 鍚岀洰褰? docker compose up -d --build
 # ============================================================
 
 services:
@@ -12,6 +12,7 @@ services:
       dockerfile: Dockerfile
     image: microsoft-rewards:local
     container_name: microsoft-rewards
+    cpus: 4
     restart: unless-stopped
     volumes:
       - ./config:/usr/src/microsoft-rewards-script/dist/config
@@ -29,7 +30,7 @@ services:
       ACCOUNT_1_TOTP_SECRET: ${ACCOUNT_1_TOTP_SECRET:-}
       ACCOUNT_1_GEO_LOCALE: ${ACCOUNT_1_GEO_LOCALE:-cn}
       ACCOUNT_1_LANG_CODE: ${ACCOUNT_1_LANG_CODE:-zh}
-      # 多账号: 取消注释并递增编号
+      # 澶氳处鍙? 鍙栨秷娉ㄩ噴骞堕€掑缂栧彿
       #ACCOUNT_2_EMAIL: ${ACCOUNT_2_EMAIL:-}
       #ACCOUNT_2_PASSWORD: ${ACCOUNT_2_PASSWORD:-}
       CONFIG_QUERY_ENGINES: 'china,local'
@@ -40,9 +41,8 @@ services:
       CONFIG_SEARCH_DELAY_MAX: '1min'
       CONFIG_CHINA_API_APPKEY: ${CHINA_API_APPKEY:-}
 
-    # ⚠️ 关键微调: 禁用 IPv6
-    # 设备无 IPv6 路由时 Chromium 等 IPv6 超时, 每个 CDN 资源慢 100 倍
-    sysctls:
+    # 鈿狅笍 鍏抽敭寰皟: 绂佺敤 IPv6
+    # 璁惧鏃?IPv6 璺敱鏃?Chromium 绛?IPv6 瓒呮椂, 姣忎釜 CDN 璧勬簮鎱?100 鍊?    sysctls:
       - net.ipv6.conf.all.disable_ipv6=1
       - net.ipv6.conf.default.disable_ipv6=1
 

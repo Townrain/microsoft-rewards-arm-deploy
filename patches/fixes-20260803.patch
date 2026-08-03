@@ -1,0 +1,737 @@
+diff --git a/old/src/browser/Browser.ts b/new/src/browser/Browser.ts
+index d9b7f42..6694a51 100644
+--- a/old/src/browser/Browser.ts
++++ b/new/src/browser/Browser.ts
+@@ -62,8 +62,10 @@ class Browser {
+                 : undefined
+ 
+             // 启动浏览器
++            const customExecutablePath = process.env.CHROMIUM_EXECUTABLE_PATH // 自定义浏览器路径（如 Termux 的 chromium）
+             browser = await rebrowser.chromium.launch({
+                 headless: this.bot.config.headless, // 是否无头模式
++                ...(customExecutablePath && { executablePath: customExecutablePath }), // 指定浏览器可执行文件
+                 ...(proxyConfig && { proxy: proxyConfig }), // 代理配置
+                 args: [...Browser.BROWSER_ARGS] // 浏览器启动参数
+             })
+diff --git a/old/src/browser/BrowserFunc.ts b/new/src/browser/BrowserFunc.ts
+index a8af8a8..b8f16fc 100644
+--- a/old/src/browser/BrowserFunc.ts
++++ b/new/src/browser/BrowserFunc.ts
+@@ -19,8 +19,8 @@ export default class BrowserFunc {
+      * next-action hash 在编译时生成，绑定到具体部署版本（dpl）。
+      * 下面是通过网络请求记录得到的当前部署版本的 hash 表；部署更新后 hash 会失效，由调用方做版本守卫。
+      */
+-    // 记录时的部署版本 ID（用于和当前页面的 dpl 比对，不一致则降级跳过）
+-    public static readonly SUPPORTED_DEPLOYMENT_ID = '20260612-3'
++    // hash 抓录时的部署版本 ID（仅作日志对照参考；版本不匹配不再拦截调用，见 callServerAction）
++    public static readonly SUPPORTED_DEPLOYMENT_ID = '20260624-3'
+ 
+     // Server Action hash 表（在 SUPPORTED_DEPLOYMENT_ID 下记录得到）
+     public static readonly SERVER_ACTION_HASHES = {
+@@ -343,8 +343,10 @@ export default class BrowserFunc {
+ 
+     /**
+      * 从 dashboard 页面提取 Next.js 部署版本 ID（dpl）。
+-     * 新版 UI 的 Server Action hash 跟 dpl 绑定，这里做版本守卫：
+-     * 与 SUPPORTED_DEPLOYMENT_ID 一致时返回该 ID；否则返回 null 表示脚本内置 hash 可能失效。
++     * 仅用于日志对照：SUPPORTED_DEPLOYMENT_ID 是抓录时的版本，部署更新后 dpl 会变，
++     * 但 Server Action hash 通常不变（微软重新部署≠改了函数）。因此不匹配时不拦截，
++     * 只打 warning 提示 hash 可能失效；真正能否调用由 callServerAction 用 HTTP 状态码判定。
++     * 仅在提取不到任何 dpl 时返回 null。
+      */
+     async extractDeploymentId(page: Page): Promise<string | null> {
+         try {
+@@ -393,9 +395,8 @@ export default class BrowserFunc {
+                     this.bot.isMobile,
+                     'SERVER-ACTION',
+                     `部署版本不匹配 | 当前=${deploymentId} | 支持=${BrowserFunc.SUPPORTED_DEPLOYMENT_ID} | ` +
+-                        '微软可能更新了 dashboard，内置的 Server Action hash 可能已失效，相关功能将降级跳过'
++                        '微软可能更新了 dashboard，内置的 Server Action hash 可能已失效；将照常尝试，若返回非 2xx 则自动降级'
+                 )
+-                return null
+             }
+ 
+             return deploymentId
+@@ -423,13 +424,13 @@ export default class BrowserFunc {
+         args: unknown[],
+         tag: string
+     ): Promise<boolean> {
+-        // 版本守卫：部署 ID 不匹配或未提取时，降级跳过（避免带失效 hash 请求导致 400/500）
+-        if (this.bot.serverActions.deploymentId !== BrowserFunc.SUPPORTED_DEPLOYMENT_ID) {
++        // 版本守卫：仅当完全没提取到部署 ID（dashboard 没加载/解析失败）时跳过；
++        // 版本号不匹配时不再拦截——hash 通常不随部署变更，照常发请求，靠响应码判定成败。
++        if (!this.bot.serverActions.deploymentId) {
+             this.bot.logger.warn(
+                 this.bot.isMobile,
+                 tag,
+-                `跳过：Server Action 部署版本不匹配（当前=${this.bot.serverActions.deploymentId ?? 'null'}, ` +
+-                    `支持=${BrowserFunc.SUPPORTED_DEPLOYMENT_ID}），可能是新版 UI 更新或未提取到部署 ID`
++                '跳过：未提取到部署 ID（dashboard 未加载或解析失败），Server Action 无法调用'
+             )
+             return false
+         }
+@@ -448,7 +449,7 @@ export default class BrowserFunc {
+                     // 这里传一个最小化的 dashboard 路由树（通过请求分析得到的结构）
+                     'next-router-state-tree':
+                         '%5B%22%22%2C%7B%22children%22%3A%5B%22(nav)%22%2C%7B%22children%22%3A%5B%22dashboard%22%2C%7B%22children%22%3A%5B%22__PAGE__%22%2C%7B%7D%2Cnull%2Cnull%2C0%5D%7D%2Cnull%2Cnull%2C0%5D%7D%2Cnull%2Cnull%2C0%5D%7D%2Cnull%2Cnull%2C16%5D',
+-                    'x-deployment-id': BrowserFunc.SUPPORTED_DEPLOYMENT_ID,
++                    'x-deployment-id': this.bot.serverActions.deploymentId,
+                     Referer: 'https://rewards.bing.com/dashboard',
+                     Cookie: this.buildCookieHeader(this.bot.cookies.mobile, [
+                         'bing.com',
+diff --git a/old/src/browser/BrowserUtils.ts b/new/src/browser/BrowserUtils.ts
+index d956df3..1557b08 100644
+--- a/old/src/browser/BrowserUtils.ts
++++ b/new/src/browser/BrowserUtils.ts
+@@ -223,14 +223,34 @@ export default class BrowserUtils {
+             await page.waitForSelector(selector, { timeout: 1000 }).catch(() => {})
+ 
+             const cursor = createCursor(page as any)
+-            await cursor.click(selector, options)
++            // 人形轨迹点击，25s 超时保护：慢渲染下 ghost-cursor 可能无限等待（scrollIntoView/位置校验循环），超时后降级原生点击
++            const clicked = await Promise.race([
++                cursor.click(selector, options).then(() => true).catch(() => false),
++                new Promise<boolean>(r => setTimeout(() => r(false), 25000))
++            ])
++
++            if (!clicked) {
++                this.bot.logger.warn(
++                    this.bot.isMobile,
++                    'GHOST-CLICK',
++                    `${selector} 超时(25s)，降级原生点击`
++                )
++                await page.click(selector, { timeout: 5000 }).catch(() => {})
++                return true
++            }
+ 
+             return true
+         } catch (error) {
++            const msg = error instanceof Error ? error.message : String(error)
++            if (msg.includes('Cannot find context') || msg.includes('DOM.describeNode')) {
++                // execution context 销毁降级：原生 click 兜底
++                await page.locator(selector).click({ force: true, timeout: 5000 }).catch(() => {})
++                return true
++            }
+             this.bot.logger.warn(
+                 this.bot.isMobile,
+                 'GHOST-CLICK',
+-                `${selector} 点击失败: ${error instanceof Error ? error.message : String(error)}`
++                `${selector} 点击失败: ${msg}`
+             )
+             return false
+         }
+diff --git a/old/src/browser/auth/Login.ts b/new/src/browser/auth/Login.ts
+index b7edc61..186fafb 100644
+--- a/old/src/browser/auth/Login.ts
++++ b/new/src/browser/auth/Login.ts
+@@ -79,7 +79,7 @@ export class Login {
+             this.bot.logger.info(this.bot.isMobile, 'LOGIN', '开始登录流程')
+ 
+             await page
+-                .goto('https://rewards.bing.com/createuser?idru=%2F&userScenarioId=anonsignin', {
++            .goto('https://rewards.bing.com/createuser?idru=%2F&userScenarioId=anonsignin', {
+                     waitUntil: 'domcontentloaded'
+                 })
+                 .catch(() => {})
+@@ -158,10 +158,10 @@ export class Login {
+     }
+ 
+     private async detectCurrentState(page: Page, account?: Account): Promise<LoginState> {
+-        await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {})
++        await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {})
+ 
+         const url = new URL(page.url())
+-        this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', `当前URL: ${url.hostname}${url.pathname}`)
++        this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', `当前URL: ${url.href.slice(0, 150)}`)
+ 
+         if (url.hostname === 'chromewebdata') {
+             this.bot.logger.warn(this.bot.isMobile, 'DETECT-STATE', '检测到chromewebdata错误页面')
+@@ -179,6 +179,11 @@ export class Login {
+             return 'LOGGED_IN'
+         }
+ 
++        if (url.hostname === 'login.live.com' && url.pathname === '/oauth20_desktop.srf' && url.searchParams.get('code')) {
++            this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', '检测到OAuth授权码重定向，假设已登录')
++            return 'LOGGED_IN'
++        }
++
+         const stateChecks: Array<[string, LoginState]> = [
+             [this.selectors.errorAlert, 'ERROR_ALERT'],
+             [this.selectors.passwordEntry, 'PASSWORD_INPUT'],
+@@ -560,7 +565,7 @@ export class Login {
+     private async finalizeLogin(page: Page, email: string) {
+         this.bot.logger.info(this.bot.isMobile, 'LOGIN', '完成登录')
+ 
+-        await page.goto(this.bot.config.baseURL, { waitUntil: 'networkidle', timeout: 10000 }).catch(() => {})
++        await page.goto(this.bot.config.baseURL, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {})
+ 
+         const loginRewardsSuccess = new URL(page.url()).hostname === 'rewards.bing.com'
+         if (loginRewardsSuccess) {
+@@ -586,49 +591,101 @@ export class Login {
+     async verifyBingSession(page: Page) {
+         const url =
+             'https://www.bing.com/fd/auth/signin?action=interactive&provider=windows_live_id&return_url=https%3A%2F%2Fwww.bing.com%2F'
+-        const loopMax = 5
++        const loopMax = 3
++        const ROUND_TIMEOUT_MS = 60000 // 单轮硬截止 60s：防止轮内操作与页面导航竞争挂起
+ 
+         this.bot.logger.info(this.bot.isMobile, 'LOGIN-BING', '验证Bing会话')
+ 
+         try {
+-            await page.goto(url, { waitUntil: 'networkidle', timeout: 10000 }).catch(() => {})
++            await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {})
+ 
++            const verifyStart = Date.now()
++            const verifyMaxMs = 90000 // 总超时 90s：慢渲染下防止验证流程拖死主流程（纯加法，不影响伪装）
+             for (let i = 0; i < loopMax; i++) {
+                 if (page.isClosed()) break
+-
+-                this.bot.logger.debug(this.bot.isMobile, 'LOGIN-BING', `验证循环 ${i + 1}/${loopMax}`)
+-
+-                const state = await this.detectCurrentState(page)
+-                if (state === 'PASSKEY_ERROR') {
+-                    this.bot.logger.info(this.bot.isMobile, 'LOGIN-BING', '忽略Passkey错误状态')
+-                    await this.bot.browser.utils.ghostClick(page, this.selectors.secondaryButton)
++                if (Date.now() - verifyStart > verifyMaxMs) {
++                    this.bot.logger.warn(this.bot.isMobile, 'LOGIN-BING', `验证总超时(${verifyMaxMs / 1000}s)，提前降级继续`)
++                    break
+                 }
++                if (page.isClosed()) break
+ 
+-                const u = new URL(page.url())
+-                const atBingHome = u.hostname === 'cn.bing.com' && u.pathname === '/'
+-                this.bot.logger.debug(
+-                    this.bot.isMobile,
+-                    'LOGIN-BING',
+-                    `在Bing首页: ${atBingHome} (${u.hostname}${u.pathname})`
+-                )
++                this.bot.logger.debug(this.bot.isMobile, 'LOGIN-BING', `验证轮 ${i + 1}/${loopMax} 开始`)
+ 
+-                if (atBingHome) {
+-                    await this.bot.browser.utils.tryDismissAllMessages(page).catch(() => {})
++                const roundOk = await Promise.race([
++                    (async (): Promise<boolean> => {
++                        let t0 = Date.now()
++                        this.bot.logger.debug(this.bot.isMobile, 'LOGIN-BING', `验证轮 ${i + 1}/${loopMax} detectCurrentState 开始`)
++                        const state = await this.detectCurrentState(page)
++                        this.bot.logger.debug(this.bot.isMobile, 'LOGIN-BING', `验证轮 ${i + 1}/${loopMax} detectCurrentState 完成 (${Date.now() - t0}ms)`)
+ 
+-                    const signedIn = await page
+-                        .waitForSelector(this.selectors.bingProfile, { timeout: 3000 })
+-                        .then(() => true)
+-                        .catch(() => false)
++                        if (state === 'PASSKEY_ERROR') {
++                            this.bot.logger.info(this.bot.isMobile, 'LOGIN-BING', '忽略Passkey错误状态')
++                            await this.bot.browser.utils.ghostClick(page, this.selectors.secondaryButton)
++                        }
+ 
+-                    this.bot.logger.debug(this.bot.isMobile, 'LOGIN-BING', `找到个人资料元素: ${signedIn}`)
++                        const u = new URL(page.url())
++                        const atBingHome = u.hostname === 'cn.bing.com' && u.pathname === '/'
++                        this.bot.logger.debug(
++                            this.bot.isMobile,
++                            'LOGIN-BING',
++                            `在Bing首页: ${atBingHome} (${u.hostname}${u.pathname})`
++                        )
+ 
+-                    if (signedIn || this.bot.isMobile) {
+-                        this.bot.logger.info(this.bot.isMobile, 'LOGIN-BING', 'Bing会话验证成功')
+-                        return
++                        if (atBingHome) {
++                            t0 = Date.now()
++                            this.bot.logger.debug(this.bot.isMobile, 'LOGIN-BING', `验证轮 ${i + 1}/${loopMax} tryDismissAllMessages 开始`)
++                            await this.bot.browser.utils.tryDismissAllMessages(page).catch(() => {})
++                            this.bot.logger.debug(this.bot.isMobile, 'LOGIN-BING', `验证轮 ${i + 1}/${loopMax} tryDismissAllMessages 完成 (${Date.now() - t0}ms)`)
++
++                            t0 = Date.now()
++                            this.bot.logger.debug(this.bot.isMobile, 'LOGIN-BING', `验证轮 ${i + 1}/${loopMax} waitForSelector(bingProfile) 开始`)
++                            let signedIn: boolean
++                            try {
++                                signedIn = await page
++                                    .waitForSelector(this.selectors.bingProfile, { timeout: 3000 })
++                                    .then(() => true)
++                                    .catch(() => false)
++                            } catch (err) {
++                                const errMsg = err instanceof Error ? err.message : String(err)
++                                if (errMsg.includes('Cannot find context') || errMsg.includes('DOM.describeNode')) {
++                                    this.bot.logger.warn(this.bot.isMobile, 'LOGIN-BING', `验证轮 ${i + 1}/${loopMax} waitForSelector 上下文丢失，按未登录处理`)
++                                    signedIn = false
++                                } else {
++                                    throw err
++                                }
++                            }
++                            this.bot.logger.debug(this.bot.isMobile, 'LOGIN-BING', `验证轮 ${i + 1}/${loopMax} waitForSelector(bingProfile) 完成 (${Date.now() - t0}ms)`)
++                            this.bot.logger.debug(this.bot.isMobile, 'LOGIN-BING', `找到个人资料元素: ${signedIn}`)
++
++                            if (signedIn || this.bot.isMobile) {
++                                this.bot.logger.info(this.bot.isMobile, 'LOGIN-BING', 'Bing会话验证成功')
++                                return true
++                            }
++                        }
++
++                        return false
++                    })(),
++                    new Promise<boolean>((_, reject) =>
++                        setTimeout(() => reject(new Error('ROUND_TIMEOUT')), ROUND_TIMEOUT_MS)
++                    )
++                ]).then(
++                    (result) => result as boolean,
++                    (err) => {
++                        this.bot.logger.warn(
++                            this.bot.isMobile,
++                            'LOGIN-BING',
++                            `验证轮 ${i + 1}/${loopMax} 超时或失败: ${err instanceof Error ? err.message : String(err)}`
++                        )
++                        return false
+                     }
+-                }
++                )
+ 
+-                await this.bot.utils.wait(1000)
++                if (roundOk === true) return
++
++                // Round timeout 冷却复位：避免旧页面操作与下一轮 goto 竞争
++                if (!page.isClosed()) {
++                    await this.bot.utils.wait(5000)
++                }
+             }
+ 
+             this.bot.logger.warn(this.bot.isMobile, 'LOGIN-BING', '无法验证Bing会话，仍然继续')
+@@ -729,4 +786,4 @@ export class Login {
+         this.bot.logger.info(this.bot.isMobile, 'GET-APP-TOKEN', '请求移动访问令牌')
+         return await new MobileAccessLogin(this.bot, page).get(email)
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/old/src/browser/auth/methods/MobileAccessLogin.ts b/new/src/browser/auth/methods/MobileAccessLogin.ts
+index 5b3df73..fb7a68b 100644
+--- a/old/src/browser/auth/methods/MobileAccessLogin.ts
++++ b/new/src/browser/auth/methods/MobileAccessLogin.ts
+@@ -4,13 +4,24 @@ import { URLSearchParams } from 'url'
+ 
+ import type { MicrosoftRewardsBot } from '../../../index'
+ 
++export class MobileAccessLoginError extends Error {
++    code: string;
++    retryable: boolean;
++    constructor(code: string, message: string, retryable: boolean) {
++        super(message);
++        this.name = 'MobileAccessLoginError';
++        this.code = code;
++        this.retryable = retryable;
++    }
++}
++
+ export class MobileAccessLogin {
+     private clientId = '0000000040170455'
+     private authUrl = 'https://login.live.com/oauth20_authorize.srf'
+     private redirectUrl = 'https://login.live.com/oauth20_desktop.srf'
+     private tokenUrl = 'https://login.microsoftonline.com/consumers/oauth2/v2.0/token'
+     private scope = 'service::prod.rewardsplatform.microsoft.com::MBI_SSL'
+-    private maxTimeout = 180_000 // 3min
++    private maxTimeout = 240_000 // 4min
+ 
+     // Selectors for handling Passkey prompt during OAuth
+     private readonly selectors = {
+@@ -63,17 +74,63 @@ export class MobileAccessLogin {
+                 `认证URL构建完成: ${authorizeUrl.origin}${authorizeUrl.pathname}`
+             )
+ 
+-            await this.bot.browser.utils.disableFido(this.page)
++            // goto 带重试：慢网络下授权页可能超时，重试一次（页面若已跳到 dashboard 说明会话已登录，可跳过）
++            for (let attempt = 0; attempt < 3; attempt++) {
++                await this.page.goto(authorizeUrl.href, { waitUntil: 'domcontentloaded', timeout: 90000 }).catch(async err => {
++                    const errMsg = err instanceof Error ? err.message : String(err)
++                    this.bot.logger.debug(
++                        this.bot.isMobile,
++                        'LOGIN-APP',
++                        `page.goto() 失败(尝试${attempt + 1}/3): ${errMsg}`
++                    )
++                    if (errMsg.includes('ECONNRESET')) {
++                        await this.bot.utils.wait(5000 * (attempt + 1))
++                    }
++                })
++                await this.bot.utils.wait(3000)
++                const afterUrl = this.page.url()
+ 
+-            this.bot.logger.debug(this.bot.isMobile, 'LOGIN-APP', '导航到OAuth授权URL')
++                // 解析 URL 参数
++                let afterParams: URLSearchParams
++                try {
++                    afterParams = new URL(afterUrl).searchParams
++                } catch {
++                    this.bot.logger.debug(this.bot.isMobile, 'LOGIN-APP', `OAuth goto 第${attempt + 1}次未完成，重试 | url=${afterUrl.slice(0, 80)}`)
++                    continue
++                }
++
++                const code = afterParams.get('code')
++                const error = afterParams.get('error')
++                const removed = afterParams.get('removed')
++                const errorDescription = afterParams.get('error_description') || ''
++
++                // 唯一成功条件：有 code 且无 error
++                if (code && !error) {
++                    break
++                }
++
++                // 处理 removed=true（用户移除授权）
++                if (removed === 'true') {
++                    if (attempt === 0) {
++                        this.bot.logger.warn(this.bot.isMobile, 'LOGIN-APP', 'OAuth授权已被用户移除，快速重试1次...')
++                        continue
++                    }
++                    throw new MobileAccessLoginError('REVOKED', 'MSA authorization removed by user. Re-authorization required.', false)
++                }
++
++                // 处理 OAuth error
++                if (error) {
++                    if (error === 'temporarily_unavailable' || error === 'server_error') {
++                        this.bot.logger.warn(this.bot.isMobile, 'LOGIN-APP', `OAuth临时错误: ${error}，重试`)
++                        continue
++                    }
++                    throw new MobileAccessLoginError('OAUTH_' + error.toUpperCase(), errorDescription || error, false)
++                }
++
++                // 其他 URL（dashboard、中间态、bing等）
++                this.bot.logger.debug(this.bot.isMobile, 'LOGIN-APP', `OAuth goto 第${attempt + 1}次未完成，重试 | url=${afterUrl.slice(0, 80)}`)
++            }
+ 
+-            await this.page.goto(authorizeUrl.href).catch(err => {
+-                this.bot.logger.debug(
+-                    this.bot.isMobile,
+-                    'LOGIN-APP',
+-                    `page.goto() 失败: ${err instanceof Error ? err.message : String(err)}`
+-                )
+-            })
+ 
+             this.bot.logger.info(this.bot.isMobile, 'LOGIN-APP', '等待移动OAuth代码...')
+ 
+@@ -102,6 +159,19 @@ export class MobileAccessLogin {
+                         }
+                     }
+ 
++                    // 提前失败检测（仅在未成功获取 code 时）
++                    if (!code) {
++                        if (url.searchParams.get('removed') === 'true') {
++                            throw new MobileAccessLoginError('REVOKED', 'OAuth revoked during polling', false)
++                        }
++                        if (url.searchParams.get('error') === 'access_denied') {
++                            throw new MobileAccessLoginError('ACCESS_DENIED', 'OAuth access denied during polling', false)
++                        }
++                        if (url.hostname === 'rewards.bing.com' || url.hostname === 'rewards.microsoft.com') {
++                            throw new MobileAccessLoginError('DASHBOARD_REDIRECT', 'OAuth page redirected to dashboard', true)
++                        }
++                    }
++
+                     // 如果出现Passkey提示则处理
+                     await this.handlePasskeyPrompt()
+                 } catch {
+@@ -124,7 +194,7 @@ export class MobileAccessLogin {
+ 
+                 this.bot.logger.debug(this.bot.isMobile, 'LOGIN-APP', `最终页面URL: ${this.page.url()}`)
+ 
+-                return ''
++                throw new MobileAccessLoginError('POLL_TIMEOUT', 'OAuth polling timeout ' + this.maxTimeout + 'ms', true)
+             }
+ 
+             const data = new URLSearchParams()
+@@ -151,18 +221,21 @@ export class MobileAccessLogin {
+                     'LOGIN-APP',
+                     `令牌响应负载: ${JSON.stringify(response?.data)}`
+                 )
+-                return ''
++                throw new MobileAccessLoginError('TOKEN_EXCHANGE', 'No access_token in response', true)
+             }
+ 
+             this.bot.logger.info(this.bot.isMobile, 'LOGIN-APP', '移动访问令牌已接收')
+             return token
+         } catch (error) {
++            if (error instanceof MobileAccessLoginError) {
++                throw error
++            }
+             this.bot.logger.error(
+                 this.bot.isMobile,
+                 'LOGIN-APP',
+                 `MobileAccess错误: ${error instanceof Error ? error.stack || error.message : String(error)}`
+             )
+-            return ''
++            throw new MobileAccessLoginError('UNKNOWN', error instanceof Error ? error.message : String(error), true)
+         } finally {
+             this.bot.logger.debug(this.bot.isMobile, 'LOGIN-APP', '返回基础URL')
+             await this.page.goto(this.bot.config.baseURL, { timeout: 10000 }).catch(() => {})
+diff --git a/old/src/functions/QueryEngine.ts b/new/src/functions/QueryEngine.ts
+index e3455d6..6e7c831 100644
+--- a/old/src/functions/QueryEngine.ts
++++ b/new/src/functions/QueryEngine.ts
+@@ -20,6 +20,11 @@ class ChinaApiRateLimitError extends Error {
+ export class QueryCore {
+     constructor(private bot: MicrosoftRewardsBot) {}
+ 
++    // 兜底模式：主源（sourceOrder[0]）原始词累计达 FALLBACK_THRESHOLD 即停，
++    // 不再请求后续源；不足则向后逐源补充，兜底源只取 FALLBACK_LOCAL_SAMPLE 个（随机抽样）。
++    private static readonly FALLBACK_THRESHOLD = 20
++    private static readonly FALLBACK_LOCAL_SAMPLE = 50
++
+     async queryManager(
+         options: {
+             shuffle?: boolean
+@@ -77,12 +82,39 @@ export class QueryCore {
+                 }
+             }
+ 
++            const primarySource = sourceOrder[0]
++            const threshold = QueryCore.FALLBACK_THRESHOLD
++            const collectedCount = () => topicLists.flat().length
++
+             for (const source of sourceOrder) {
++                // 已累计达标就停，不再请求后续源（主源或前序兜底源已够用）
++                if (collectedCount() >= threshold) {
++                    this.bot.logger.debug(
++                        this.bot.isMobile,
++                        'QUERY-MANAGER',
++                        `兜底命中阈值，停止取后续源 | 已累计=${collectedCount()} | 阈值=${threshold} | 停在源=${source}`
++                    )
++                    break
++                }
++
+                 const handler = sourceHandlers[source]
+                 if (!handler) continue
+ 
+                 const topics = await Promise.resolve(handler())
+-                if (topics.length) topicLists.push(topics)
++                if (!topics.length) continue
++
++                // 主源全量纳入；后续源只随机抽样 FALLBACK_LOCAL_SAMPLE 个补充
++                if (source !== primarySource) {
++                    const sampled = this.bot.utils.shuffleArray([...topics]).slice(0, QueryCore.FALLBACK_LOCAL_SAMPLE)
++                    topicLists.push(sampled)
++                    this.bot.logger.debug(
++                        this.bot.isMobile,
++                        'QUERY-MANAGER',
++                        `兜底补充 | 源=${source} | 原始=${topics.length} | 抽样=${sampled.length} | 累计=${collectedCount()}`
++                    )
++                } else {
++                    topicLists.push(topics)
++                }
+             }
+ 
+             this.bot.logger.debug(
+@@ -721,7 +753,12 @@ export class QueryCore {
+             url,
+             method: 'GET',
+             headers: {
+-                ...(this.bot.fingerprint?.headers ?? {})
++                ...(this.bot.fingerprint?.headers ?? {}),
++                // axios 不支持 zstd/br 解压，而 fingerprint 注入了
++                // "accept-encoding: gzip, deflate, br, zstd"，gmya.net 据此返回 zstd 压缩流，
++                // axios 无法解码导致响应体全是乱码(U+FFFD)、被当成非法结构丢弃。
++                // 覆盖为 axios 能解的编码，只影响中国热搜源。
++                'accept-encoding': 'gzip, deflate'
+             },
+             timeout: 10000
+         }
+diff --git a/old/src/functions/SearchManager.ts b/new/src/functions/SearchManager.ts
+index dd25592..3fbd7ad 100644
+--- a/old/src/functions/SearchManager.ts
++++ b/new/src/functions/SearchManager.ts
+@@ -379,10 +379,6 @@ export class SearchManager {
+ 
+         await this.bot['login'].login(this.bot.mainDesktopPage, account)
+ 
+-        this.bot.logger.info('main', 'SEARCH-DESKTOP-LOGIN', '登录通过，正在验证')
+-        this.bot.logger.debug('main', 'SEARCH-DESKTOP-LOGIN', 'verifyBingSession')
+-
+-        await this.bot['login'].verifyBingSession(this.bot.mainDesktopPage)
+         this.bot.cookies.desktop = await session.context.cookies()
+ 
+         this.bot.logger.debug('main', 'SEARCH-DESKTOP-LOGIN', 'Cookie已存储')
+diff --git a/old/src/functions/activities/browser/Search.ts b/new/src/functions/activities/browser/Search.ts
+index 05473e7..4da7f85 100644
+--- a/old/src/functions/activities/browser/Search.ts
++++ b/new/src/functions/activities/browser/Search.ts
+@@ -67,13 +67,10 @@ export class Search extends Workers {
+ 
+             this.bot.logger.info(isMobile, 'SEARCH-BING', `搜索查询池准备就绪 | count=${queries.length}`)
+ 
+-            // 跳转到bing
+-            const targetUrl = this.searchPageURL ? this.searchPageURL : this.bingHome
+-            this.bot.logger.debug(isMobile, 'SEARCH-BING', `导航到搜索页面 | url=${targetUrl}`)
+-
+-            await page.goto(targetUrl)
+-            await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
+-            await this.bot.browser.utils.tryDismissAllMessages(page)
++            // 初始化页面上下文：等重定向(bing.com→cn.bing.com)与布局稳定，慢网络下防止交互时序错乱
++            await page.goto(this.bingHome, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {})
++            await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {})
++            await this.bot.utils.wait(2000)
+ 
+             let stagnantLoop = 0
+             const stagnantLoopMax = 10
+@@ -291,8 +288,9 @@ export class Search extends Workers {
+             const cvid = randomBytes(16).toString('hex')
+             const url = `${this.bingHome}/search?q=${encodeURIComponent(query)}&PC=U531&FORM=ANNTA1&cvid=${cvid}`
+ 
+-            await searchPage.goto(url)
+-            await searchPage.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
++            await searchPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 90000 })
++            await searchPage.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {})
++            await this.bot.utils.wait(2000)
+             await this.bot.browser.utils.tryDismissAllMessages(searchPage)
+         }
+ 
+@@ -315,14 +313,17 @@ export class Search extends Workers {
+                 })
+ 
+                 await searchPage.keyboard.press('Home')
+-                await searchBox.waitFor({ state: 'visible', timeout: 15000 })
++                await searchBox.waitFor({ state: 'visible', timeout: 30000 })
+ 
+                 await this.bot.utils.wait(1000)
+-                await this.bot.browser.utils.ghostClick(searchPage, searchBar, { clickCount: 3 })
++                // 人形轨迹点击（防检测核心），maxTries=3 减少ghost-cursor内部重试，避免慢网络下12s超时
++                await this.bot.browser.utils.ghostClick(searchPage, searchBar, { clickCount: 3, maxTries: 3 })
++                await searchBox.click({ timeout: 5000 }).catch(() => {})
+                 await searchBox.fill('')
+ 
+                 await searchPage.keyboard.type(query, { delay: 50 })
+                 await searchPage.keyboard.press('Enter')
++                this.bot.logger.debug(isMobile, 'SEARCH-BING', `提交后页面URL | attempt=${i + 1}/${maxAttempts} | url=${searchPage.url().slice(0, 120)}`)
+ 
+                 this.bot.logger.debug(
+                     isMobile,
+@@ -333,12 +334,12 @@ export class Search extends Workers {
+                 await this.bot.utils.wait(3000)
+ 
+                 if (this.bot.config.searchSettings.scrollRandomResults) {
+-                    await this.bot.utils.wait(2000)
++                    await this.bot.utils.wait(1500)
+                     await this.randomScroll(searchPage, isMobile)
+                 }
+ 
+                 if (this.bot.config.searchSettings.clickRandomResults) {
+-                    await this.bot.utils.wait(2000)
++                    await this.bot.utils.wait(1500)
+                     await this.clickRandomLink(searchPage, isMobile)
+                 }
+ 
+@@ -384,6 +385,21 @@ export class Search extends Workers {
+             }
+         }
+ 
++        // 搜索框交互全部失败时，URL 直接搜索兜底（URL 搜索同样计分）
++        try {
++            this.bot.logger.warn(isMobile, 'SEARCH-BING', `搜索框交互失败，URL直接搜索兜底 | query="${query}"`)
++            const cvid = randomBytes(16).toString('hex')
++            const url = `${this.bingHome}/search?q=${encodeURIComponent(query)}&PC=U531&FORM=ANNTA1&cvid=${cvid}`
++            await searchPage.goto(url, { waitUntil: 'domcontentloaded', timeout: 90000 }).catch(() => {})
++            await searchPage.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {})
++            await this.bot.utils.wait(2000)
++            const counters = await this.bot.browser.func.getSearchPoints()
++            this.bot.logger.debug(isMobile, 'SEARCH-BING', `URL兜底搜索后的搜索计数器 | query="${query}"`)
++            return counters
++        } catch {
++            // 兜底也失败，走原有返回逻辑
++        }
++
+         this.bot.logger.debug(
+             isMobile,
+             'SEARCH-BING',
+@@ -422,7 +438,10 @@ export class Search extends Workers {
+ 
+             const searchPageUrl = page.url()
+ 
+-            await this.bot.browser.utils.ghostClick(page, '#b_results .b_algo h2')
++            await Promise.race([
++                this.bot.browser.utils.ghostClick(page, '#b_results .b_algo h2'),
++                new Promise(r => setTimeout(r, 15000))
++            ])
+             await this.bot.utils.wait(this.bot.config.searchSettings.searchResultVisitTime)
+ 
+             if (isMobile) {
+diff --git a/old/src/index.ts b/new/src/index.ts
+index ed5254a..c754147 100644
+--- a/old/src/index.ts
++++ b/new/src/index.ts
+@@ -15,6 +15,7 @@ import { loadAccounts, loadConfig } from './util/Load'
+ import { checkNodeVersion } from './util/Validator'
+ 
+ import { Login } from './browser/auth/Login'
++import { MobileAccessLoginError } from './browser/auth/methods/MobileAccessLogin'
+ import { Workers } from './functions/Workers'
+ import Activities from './functions/Activities'
+ import { SearchManager } from './functions/SearchManager'
+@@ -467,11 +468,21 @@ export class MicrosoftRewardsBot {
+                 try {
+                     this.accessToken = await this.login.getAppAccessToken(this.mainMobilePage, accountEmail)
+                 } catch (error) {
+-                    this.logger.error(
+-                        'main',
+-                        'FLOW',
+-                        `获取移动访问令牌失败: ${error instanceof Error ? error.message : String(error)}`
+-                    )
++                    if (error instanceof MobileAccessLoginError) {
++                        if (error.retryable) {
++                            this.logger.error(this.isMobile, 'LOGIN-APP', `移动访问令牌获取失败(可重试): ${error.message}`)
++                        } else {
++                            this.logger.error(this.isMobile, 'LOGIN-APP', `移动访问令牌获取失败(致命): [${error.code}] ${error.message}`)
++                            // 致命错误：跳过本账号的移动端流程
++                            throw error
++                        }
++                    } else {
++                        this.logger.error(
++                            'main',
++                            'FLOW',
++                            `获取移动访问令牌失败: ${error instanceof Error ? error.message : String(error)}`
++                        )
++                    }
+                 }
+ 
+                 this.cookies.mobile = await initialContext.cookies()
+@@ -481,14 +492,14 @@ export class MicrosoftRewardsBot {
+                 const appData: AppDashboardData = await this.browser.func.getAppDashboardData()
+                 this.panelData = await this.browser.func.getPanelFlyoutData()
+ 
+-                // 新版 UI 用 Next.js Server Actions，需要从 dashboard 页面提取部署 ID
+-                // 作为版本守卫（hash 跟部署版本绑定，不一致就降级跳过，避免 400）
++                // 新版 UI 用 Next.js Server Actions，提取部署 ID 用于请求头和日志对照。
++                // 版本号本身不再拦截调用（hash 通常不随部署变更）；仅提取不到 ID 时才跳过。
+                 this.serverActions.deploymentId = await this.browser.func.extractDeploymentId(this.mainMobilePage)
+                 if (this.serverActions.deploymentId) {
+                     this.logger.info(
+                         'main',
+                         'SERVER-ACTION',
+-                        `新版仪表板部署 ID: ${this.serverActions.deploymentId} | Server Action 支持版本: ${BrowserFunc.SUPPORTED_DEPLOYMENT_ID}`
++                        `新版仪表板部署 ID: ${this.serverActions.deploymentId} | hash 抓录版本(参考): ${BrowserFunc.SUPPORTED_DEPLOYMENT_ID}`
+                     )
+                 }
+                 // 设置地理位置
+@@ -601,6 +612,19 @@ async function main(): Promise<void> {
+         process.exit(1)
+     })
+     process.on('unhandledRejection', async reason => {
++        const msg = reason instanceof Error ? reason.message : String(reason)
++        // 页面导航竞争的幽灵 rejection（execution context 销毁）是此环境常态，记录但不杀死主流程
++        // Protocol error 全族为页面导航竞争幽灵错误，统一忽略
++        if (
++            msg.includes('Cannot find context') ||
++            msg.includes('DOM.describeNode') ||
++            msg.includes('Execution context was destroyed') ||
++            msg.includes('Unable to adopt element handle') ||
++            msg.startsWith('Protocol error')
++        ) {
++            rewardsBot.logger.warn('main', 'UNHANDLED-REJECTION-IGNORED', msg)
++            return
++        }
+         rewardsBot.logger.error('main', 'UNHANDLED-REJECTION', reason as Error)
+         await flushAllWebhooks()
+         process.exit(1)
+@@ -614,6 +638,8 @@ async function main(): Promise<void> {
+     }
+ }
+ 
++
++
+ main().catch(async error => {
+     const tmpBot = new MicrosoftRewardsBot()
+     tmpBot.logger.error('main', 'MAIN-ERROR', error as Error)

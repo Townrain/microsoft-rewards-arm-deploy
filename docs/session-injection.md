@@ -75,3 +75,16 @@ npm start
 
 - cookie 文件包含账号认证信息，传输/存储注意保密，用完可删除
 - 不要在公开渠道分享 cookie 或含账号信息的日志
+
+---
+
+## 桌面会话（session_desktop.json）—— 额外要求：UA/指纹匹配
+
+> ⚠️ 移动端注入不需要本节。**桌面端**外部注入会话后若搜索 0 分，是因为容器浏览器随机指纹 UA ≠ 会话签发 UA，Bing 不计分。
+
+**必须同时注入**（缺一不可）：
+1. session_desktop.json（cookies，含 .bing.com + .msn.cn 双域 _EDGE_S——登录后访问 https://www.msn.cn/ 触发 .msn.cn 域 SID）
+2. session_fingerprint_desktop.json（指纹，ingerprint.navigator.userAgent = 签发浏览器的 UA）
+3. entrypoint.sh 改 saveFingerprint.desktop: true（容器内 sed，重建会还原）
+
+完整流程与验证见 desktop-session-fingerprint.md。
