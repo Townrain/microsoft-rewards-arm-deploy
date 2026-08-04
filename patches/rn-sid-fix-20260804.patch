@@ -1,0 +1,59 @@
+diff --git "a/src/browser/BrowserFunc.ts" "b/src/browser/BrowserFunc.ts"
+index b8f16fc..fa03676 100644
+--- "a/src/browser/BrowserFunc.ts"
++++ "b/src/browser/BrowserFunc.ts"
+@@ -438,6 +438,39 @@ export default class BrowserFunc {
+         const actionHash = BrowserFunc.SERVER_ACTION_HASHES[actionName]
+ 
+         try {
++            // 实时刷新 mobile cookies：微软 2026-08 更新后，Server Action 请求缺少
++            // dashboard 页面下发的 rn_SID 等会话 cookie 时会被静默忽略（返回完整页面流），
++            // 导致调用返回 200 但实际未执行。登录时保存的 cookies 快照不含 rn_SID，
++            // 必须在调用前确保页面已打开 dashboard 并同步最新 cookie。
++            try {
++                const page = this.bot.mainMobilePage
++                if (page) {
++                    let liveCookies = await page.context().cookies()
++                    if (!liveCookies.some(c => c.name === 'rn_SID' && c.value)) {
++                        this.bot.logger.debug(
++                            this.bot.isMobile,
++                            tag,
++                            '缺少 rn_SID，导航到 dashboard 刷新会话 cookie'
++                        )
++                        await page
++                            .goto('https://rewards.bing.com/dashboard', {
++                                waitUntil: 'domcontentloaded',
++                                timeout: 60000
++                            })
++                            .catch(() => {})
++                        await this.bot.utils.wait(3000)
++                        liveCookies = await page.context().cookies()
++                    }
++                    this.bot.cookies.mobile = liveCookies
++                }
++            } catch (cookieError) {
++                this.bot.logger.debug(
++                    this.bot.isMobile,
++                    tag,
++                    `刷新 cookies 失败: ${cookieError instanceof Error ? cookieError.message : String(cookieError)}`
++                )
++            }
++
+             const request: AxiosRequestConfig = {
+                 url: 'https://rewards.bing.com/dashboard',
+                 method: 'POST',
+@@ -474,6 +507,14 @@ export default class BrowserFunc {
+                 tag,
+                 `收到 Server Action 响应 | action=${actionName} | 状态=${response.status}`
+             )
++            if (this.bot.config.debugLogs) {
++                const bodyPreview = typeof response.data === 'string' ? response.data.slice(0, 80) : String(response.data ?? '').slice(0, 80)
++                this.bot.logger.debug(
++                    this.bot.isMobile,
++                    tag,
++                    `Server Action 响应体 | ${bodyPreview.replace(/\n/g, '|')}`
++                )
++            }
+ 
+             if (response.status >= 200 && response.status < 300) {
+                 return true

@@ -69,6 +69,14 @@
 - **验证**：桌面 UA 日志与签发 UA 一致 → 搜索 获得积分=3 points → 51/51 全拿
 - 完整流程见 docs/desktop-session-fingerprint.md
 
+#### 坑 5：Server Action 静默失败（200 但积分不涨）— rn_SID 会话 cookie
+
+- **症状**：2026-08-02 起 CLAIM-BONUS-POINTS 每次返回 200 但余额不变（"领取奖励积分完成但无积分变化"），dashboard 大额积分（实例1 的 900 点）一直领不到；连击保护 toggle 同样疑似无效
+- **诊断**：真实浏览器点击领取成功（+3 到账），但脚本手动构造的 Server Action 请求返回**完整页面流（163KB）**而非 action 结果流（46B）——action 被服务端静默忽略。逐项排除：action hash 未变（9381 chunk 中 createServerReference 确认）、next-router-state-tree 与真实请求逐字节一致、请求格式（next-action header + body []）相同。最终用浏览器 context 实时 cookie 与会话文件对比，发现关键差异：**`rn_SID`（rewards.bing.com 域会话 ID）只在打开 dashboard 页面时由服务端 set-cookie 下发**，脚本 `cookies.mobile` 是登录时快照（index.ts:488），页面拿到 rn_SID 后未同步（549 行刷新发生在 Server Action 之后）
+- **根因**：微软更新 dashboard 后，Server Action 请求缺少 rn_SID 时被静默忽略（返回 200 + 完整页面流，不执行 action）
+- **修复**：`callServerAction` 调用前实时从浏览器 context 刷新 mobile cookies（缺 rn_SID 时自动导航 dashboard）——见 `patches/rn-sid-fix-20260804.patch`
+- **验证**：修复后响应体从 163KB 页面流 → `0:{"a":"$@1","f":"","q":"","i":false}|1:false`（action 真正执行）；连击保护 toggle 恢复
+
 ## 🧰 补丁（patches/）
 
 - login.patch：passkey 注册引导页跳过 + checkSelector 超时 5000ms（旧）
@@ -80,6 +88,8 @@
   - unhandledRejection 分类（Protocol error 全族仅记录不退出）
   - Login 入口保留 createuser + oauth20_desktop.srf 带 code 判定 LOGGED_IN
   - 应用：cd <repo> && git apply -p2 patches/fixes-20260803.patch
+- rn-sid-fix-20260804.patch：**2026-08-04 rn_SID 修复**（callServerAction 调用前实时刷新 mobile cookies，缺 rn_SID 自动导航 dashboard；含响应体 debug 日志）
+  - 应用：cd <repo> && git apply -p2 patches/rn-sid-fix-20260804.patch
 ## 🚀 快速开始（一条命令）
 
 ```sh
@@ -99,7 +109,8 @@ sh deploy.sh /root/microsoft-rewards
 ├── docker-compose.yml        # 微调版 (IPv6 禁用 + build context=./src)
 ├── .env.example              # 环境变量模板 (全部脱敏)
 ├── patches/
-│   └── login.patch           # Login.ts 补丁 (超时 5000ms + passkey 跳过)
+│   ├── login.patch           # Login.ts 补丁 (超时 5000ms + passkey 跳过)
+│   └── rn-sid-fix-20260804.patch # rn_SID 会话 cookie 修复 (08-04)
 └── docs/
     ├── deploy-ops.md         # 部署/维护/备份/故障排查
     └── session-injection.md  # 会话注入流程 (风控环境关键步骤)
@@ -123,6 +134,7 @@ sh deploy.sh /root/microsoft-rewards
 | 登录检测 | 25 轮 UNKNOWN 超时 | 迭代 1 LOGGED_IN |
 | OAuth 取码 | 180s 超时 | **6 秒** |
 | Server Action | 401 | 全 200 |
+| Server Action 响应 | 163KB 页面流（静默忽略） | 46B action 结果流（真正执行） |
 | 积分收集 | +0 | 正常增长 |
 
 环境：Podroid（Alpine 3.24 / aarch64 / 4 核 2GB）· Docker 29.5.3 + Compose v5.1.4 · 上游 v3.1.6.4
