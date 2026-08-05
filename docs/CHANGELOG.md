@@ -79,3 +79,31 @@
 ### 影响文件
 - src/browser/BrowserFunc.ts（callServerAction cookie 刷新 + 响应体日志）
 - 镜像重建部署（microsoft-rewards:local，两实例）
+
+
+## 重建镜像丢失 dist 修复（08-05）—— 8/3 晚修复回灌源码
+
+### 症状
+- 08-05 重建镜像（rn_SID 修复）部署后，实例1 补跑在搜索阶段崩溃：
+  UNHANDLED-REJECTION: Unable to adopt element handle from a different document（进程退出，run_daily.sh 报错）
+- 桌面端指纹设置失效（entrypoint.sh sed 修改随重建还原，saveFingerprint.desktop 回 false）
+- 实例1 旧镜像出现"余额 0 空跑"（+0 积分，11 分钟结束）
+
+### 根因
+- 8/3 晚的修复只改了容器内 dist（patch_*.sh 系列），未回灌构建上下文 src
+- 重建镜像后 dist 层修复全部丢失（grep 远程 src/src/index.ts 'Unable to adopt' = 0 确认）
+
+### 修复
+1. 对比远程构建上下文 vs 本地完整修复版源码，确认 7 个文件差异：
+   Browser.ts / BrowserUtils.ts / Login.ts / MobileAccessLogin.ts / SearchManager.ts / Search.ts / index.ts
+2. 7 文件回灌远程 src + entrypoint.sh 固化 saveFingerprint.desktop: true
+3. 重新构建镜像部署两实例（patches/fixes-20260804.patch）
+
+### 验证
+- 实例2 完整跑通：第一轮 +97（RUN_ON_START 手动触发）+ 第二轮 +33（7:00 cron，含 CLAIM 实领 3 分响应 1:true）= 总计 +130（5680→5713），搜索拿满，零崩溃
+- 实例1：余额读取恢复正常（旧余额=4600），CLAIM/连击保护响应体均为 action 流
+- 幽灵 rejection 全部 IGNORED（不再有 UNHANDLED-REJECTION 退出）
+
+### 教训
+- 所有修复必须回灌 src 再重建镜像；dist 层补丁只适合临时应急
+- entrypoint.sh 的 sed 修改重建必还原，需固化到源码

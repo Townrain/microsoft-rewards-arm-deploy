@@ -75,7 +75,18 @@
 - **诊断**：真实浏览器点击领取成功（+3 到账），但脚本手动构造的 Server Action 请求返回**完整页面流（163KB）**而非 action 结果流（46B）——action 被服务端静默忽略。逐项排除：action hash 未变（9381 chunk 中 createServerReference 确认）、next-router-state-tree 与真实请求逐字节一致、请求格式（next-action header + body []）相同。最终用浏览器 context 实时 cookie 与会话文件对比，发现关键差异：**`rn_SID`（rewards.bing.com 域会话 ID）只在打开 dashboard 页面时由服务端 set-cookie 下发**，脚本 `cookies.mobile` 是登录时快照（index.ts:488），页面拿到 rn_SID 后未同步（549 行刷新发生在 Server Action 之后）
 - **根因**：微软更新 dashboard 后，Server Action 请求缺少 rn_SID 时被静默忽略（返回 200 + 完整页面流，不执行 action）
 - **修复**：`callServerAction` 调用前实时从浏览器 context 刷新 mobile cookies（缺 rn_SID 时自动导航 dashboard）——见 `patches/rn-sid-fix-20260804.patch`
-- **验证**：修复后响应体从 163KB 页面流 → `0:{"a":"$@1","f":"","q":"","i":false}|1:false`（action 真正执行）；连击保护 toggle 恢复
+- **验证**：修复后响应体从 163KB 页面流 → `0:{"a":"$@1","f":"","q":"","i":false}|1:false`（action 真正执行）；连击保护 toggle 恢复；实例2 实领 3 分（响应 `1:true`）
+
+#### 坑 6：重建镜像丢失 dist 层修复（只改 dist 不回灌源码）
+
+- **症状**：2026-08-03 晚的修复（Unable to adopt 幽灵 rejection 过滤器、指纹固化等）只改了容器内 dist，未回灌构建上下文 src。08-05 重建镜像部署后，实例1 补跑在搜索阶段崩溃（`UNHANDLED-REJECTION: Unable to adopt element handle from a different document` → 进程退出），且桌面端指纹设置（entrypoint.sh sed 修改）随重建还原
+- **诊断**：`grep -c 'Unable to adopt' 远程src/src/index.ts` = 0 → 源码层确实缺失；对比远程构建上下文与本地修复版源码，确认 7 个文件差异（Browser.ts / BrowserUtils.ts / Login.ts / MobileAccessLogin.ts / SearchManager.ts / Search.ts / index.ts）
+- **根因**：8/3 晚的 dist 补丁（patch_*.sh 系列）未同步回 src，镜像重建后修复丢失
+- **修复**：将 7 个源码文件从完整修复版回灌远程 src；entrypoint.sh 固化 `saveFingerprint.desktop: true`（避免重建还原）——见 `patches/fixes-20260804.patch`
+- **教训**：**所有修复必须回灌 src 后再重建镜像**；dist 层补丁只适合临时应急
+- **验证**：重建后实例2 完整跑通（+130 分：第一轮 +97 + 第二轮 +33，含 CLAIM 实领 3 分），实例1 余额读取恢复正常
+
+## 🧰 补丁（patches/）
 
 ## 🧰 补丁（patches/）
 
@@ -90,6 +101,14 @@
   - 应用：cd <repo> && git apply -p2 patches/fixes-20260803.patch
 - rn-sid-fix-20260804.patch：**2026-08-04 rn_SID 修复**（callServerAction 调用前实时刷新 mobile cookies，缺 rn_SID 自动导航 dashboard；含响应体 debug 日志）
   - 应用：cd <repo> && git apply -p2 patches/rn-sid-fix-20260804.patch
+- fixes-20260804.patch：**2026-08-04 晚找回的 8/3 晚 dist 修复**（重建镜像丢失，需在 fixes-20260803.patch 之后应用）：
+  - 幽灵 rejection 过滤器扩展（Unable to adopt element handle 加入 IGNORED）
+  - OAuth 重构（MobileAccessLoginError 异常体系、removed 快速重试、轮询失败检测）
+  - verifyBingSession 60s 硬截止 + domcontentloaded + loopMax 3
+  - 搜索时序（networkidle 恢复、URL 直接搜索兜底、提交后 URL 日志）
+  - ghostClick 加固（context 错误降级、25s 超时）
+  - entrypoint.sh 固化 saveFingerprint.desktop: true（桌面指纹不随重建还原）
+  - 应用：cd <repo> && git apply -p2 patches/fixes-20260803.patch && git apply -p2 patches/fixes-20260804.patch
 ## 🚀 快速开始（一条命令）
 
 ```sh
