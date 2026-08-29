@@ -1,0 +1,27 @@
+--- a/src/browser/auth/Login.ts
++++ b/src/browser/auth/Login.ts
+@@ -737,7 +737,23 @@
+                 if (atRewardHome) {
+                     await this.bot.browser.utils.tryDismissAllMessages(page)
+ 
+-                    const html = await page.content()
++                    // 导航竞态容错（2026-08-29 本地修复）：页面仍在导航时 page.content() 会抛
++                    // "Unable to retrieve content because the page is navigating"，重试等待导航稳定
++                    let html = ''
++                    for (let attempt = 1; attempt <= 3; attempt++) {
++                        try {
++                            html = await page.content()
++                            break
++                        } catch (e) {
++                            this.bot.logger.warn(
++                                this.bot.isMobile,
++                                'GET-REWARD-SESSION',
++                                `page.content() 导航竞态 (${attempt}/3): ${e instanceof Error ? e.message : String(e)}`
++                            )
++                            if (attempt === 3) throw e
++                            await this.bot.utils.wait(2000)
++                        }
++                    }
+                     const $ = await this.bot.browser.utils.loadInCheerio(html)
+ 
+                     // 检查当前使用的是哪个版本的仪表板，在新版仪表板上禁用 requestToken 请求

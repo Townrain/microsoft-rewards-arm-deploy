@@ -1,0 +1,79 @@
+--- a/src/browser/auth/Login.ts
++++ b/src/browser/auth/Login.ts
+@@ -624,7 +624,13 @@
+                         }
+ 
+                         const u = new URL(page.url())
+-                        const atBingHome = u.hostname === 'cn.bing.com' && u.pathname === '/'
++                        // [2026-08-20 本地修复] 桌面端 auth 重定向会落到 rewards.bing.com/dashboard：
++                        // 能到达该页即证明 bing.com 会话 cookie 有效（无效会停在 login.live.com），直接判定成功
++                        if (u.hostname === 'rewards.bing.com') {
++                            this.bot.logger.info(this.bot.isMobile, 'LOGIN-BING', 'Bing会话验证成功 (rewards dashboard 可达)')
++                            return true
++                        }
++                        const atBingHome = u.hostname.endsWith('bing.com')
+                         this.bot.logger.debug(
+                             this.bot.isMobile,
+                             'LOGIN-BING',
+@@ -634,18 +640,30 @@
+                         if (atBingHome) {
+                             t0 = Date.now()
+                             this.bot.logger.debug(this.bot.isMobile, 'LOGIN-BING', `验证轮 ${i + 1}/${loopMax} tryDismissAllMessages 开始`)
+-                            await this.bot.browser.utils.tryDismissAllMessages(page).catch(() => {})
++                            // 弹窗清理非验证必需：ghost-cursor 模拟点击在慢页面可能拖 200s+，
++                            // 验证轮仅 60s 预算，这里加 10s 硬上限，防止验证被弹窗清理拖死
++                            await Promise.race([
++                                this.bot.browser.utils.tryDismissAllMessages(page).catch(() => {}),
++                                new Promise<void>((r) => setTimeout(r, 10000)),
++                            ])
+                             this.bot.logger.debug(this.bot.isMobile, 'LOGIN-BING', `验证轮 ${i + 1}/${loopMax} tryDismissAllMessages 完成 (${Date.now() - t0}ms)`)
+ 
+                             t0 = Date.now()
+                             this.bot.logger.debug(this.bot.isMobile, 'LOGIN-BING', `验证轮 ${i + 1}/${loopMax} waitForSelector(bingProfile) 开始`)
+                             let signedIn: boolean
+                             try {
+-                                signedIn = await page
+-                                    .waitForSelector(this.selectors.bingProfile, { timeout: 3000 })
+-                                    .then(() => true)
+-                                    .catch(() => false)
+-                            } catch (err) {
++                                // 已登录信号：头像可见（#id_p）或 Sign in 按钮隐藏（#id_s），任一命中即认为会话有效
++                                signedIn = await Promise.race([
++                                    page
++                                        .waitForSelector(this.selectors.bingProfile, { state: 'visible', timeout: 3000 })
++                                        .then(() => true)
++                                        .catch(() => false),
++                                    page
++                                        .waitForSelector('#id_s', { state: 'hidden', timeout: 3000 })
++                                        .then(() => true)
++                                        .catch(() => false),
++                                ])
++                            } catch (err) {
+                                 const errMsg = err instanceof Error ? err.message : String(err)
+                                 if (errMsg.includes('Cannot find context') || errMsg.includes('DOM.describeNode')) {
+                                     this.bot.logger.warn(this.bot.isMobile, 'LOGIN-BING', `验证轮 ${i + 1}/${loopMax} waitForSelector 上下文丢失，按未登录处理`)
+@@ -719,7 +737,23 @@
+                 if (atRewardHome) {
+                     await this.bot.browser.utils.tryDismissAllMessages(page)
+ 
+-                    const html = await page.content()
++                    // 导航竞态容错（2026-08-29 本地修复）：页面仍在导航时 page.content() 会抛
++                    // "Unable to retrieve content because the page is navigating"，重试等待导航稳定
++                    let html = ''
++                    for (let attempt = 1; attempt <= 3; attempt++) {
++                        try {
++                            html = await page.content()
++                            break
++                        } catch (e) {
++                            this.bot.logger.warn(
++                                this.bot.isMobile,
++                                'GET-REWARD-SESSION',
++                                `page.content() 导航竞态 (${attempt}/3): ${e instanceof Error ? e.message : String(e)}`
++                            )
++                            if (attempt === 3) throw e
++                            await this.bot.utils.wait(2000)
++                        }
++                    }
+                     const $ = await this.bot.browser.utils.loadInCheerio(html)
+ 
+                     // 检查当前使用的是哪个版本的仪表板，在新版仪表板上禁用 requestToken 请求
