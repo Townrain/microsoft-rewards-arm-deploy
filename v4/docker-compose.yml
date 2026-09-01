@@ -1,0 +1,75 @@
+# ============================================================
+# Microsoft Rewards 自动脚本 — ARM64 / Podroid 部署 (v4.3.2 V4-china + 本地适配)
+# 用法：把此文件和 .env 放在同一项目目录，然后：
+#   docker compose up -d
+# 说明：镜像需先用 v4 源码构建一次（见 MIGRATION.md），此处 build 段可留作重构建入口
+# ============================================================
+
+services:
+  microsoft-rewards:
+    # 本地构建（v4 无官方 arm64 镜像，必须本地构建）
+    # [部署适配] v4 源码放在 ./src 子目录，构建上下文指向 ./src（避免 .env 进入 build context）
+    # 若采用"共享源码目录一次构建"方案，把下面 build 段删除，仅保留 image 即可
+    build:
+      context: ./src
+      dockerfile: Dockerfile
+    image: microsoft-rewards-v4:local
+    container_name: microsoft-rewards
+    cpus: 4
+    restart: unless-stopped
+    # ---------- 数据持久化 ----------
+    volumes:
+      # 配置目录 — entrypoint 自动生成（v4 路径：$SCRIPT_DIR/config）
+      - ./config:/usr/src/microsoft-rewards-script/config
+      # ⚠️ 会话目录 — v4 用 SQLite (sessions.db) 存 cookie+指纹，升级不丢，务必定期备份
+      - ./sessions:/usr/src/microsoft-rewards-script/sessions
+
+    # ---------- 环境变量 ----------
+    environment:
+      # ═══ 调度 ═══
+      TZ: "Asia/Shanghai"
+      NODE_ENV: 'production'
+      CRON_SCHEDULE: '0 0 * * *'          # 每个项目目录各自改时间，错峰执行
+      RUN_ON_START: 'false'                 # 试点时改 'true' 触发首次运行验证
+      SKIP_RANDOM_SLEEP: 'false'
+      MIN_SLEEP_MINUTES: "0"
+      MAX_SLEEP_MINUTES: "30"
+      # ═══ 账号（从 .env 读取） ═══
+      ACCOUNT_1_EMAIL: ${ACCOUNT_1_EMAIL}
+      ACCOUNT_1_PASSWORD: ${ACCOUNT_1_PASSWORD}
+      ACCOUNT_1_TOTP_SECRET: ${ACCOUNT_1_TOTP_SECRET:-}
+      ACCOUNT_1_GEO_LOCALE: ${ACCOUNT_1_GEO_LOCALE:-cn}
+      ACCOUNT_1_LANG_CODE: ${ACCOUNT_1_LANG_CODE:-zh}
+
+      # ═══ 国内优化（v4 键名是 CONFIG_SEARCH_QUERY_ENGINES，不是 v3 的 CONFIG_QUERY_ENGINES） ═══
+      CONFIG_SEARCH_QUERY_ENGINES: 'china,local'  # china=中国热搜 + local=本地词兜底
+      # gmya.net appkey，填入解除免费档限流（留空走免费档）
+      CONFIG_CHINA_API_APPKEY: ${CHINA_API_APPKEY:-}
+
+      # ═══ PushPlus 微信通知（推荐开启） ═══
+      CONFIG_PUSHPLUS_ENABLED: ${PUSHPLUS_ENABLED:-false}
+      CONFIG_PUSHPLUS_TOKEN: ${PUSHPLUS_TOKEN:-}
+      CONFIG_PUSHPLUS_TEMPLATE: ${PUSHPLUS_TEMPLATE:-txt}
+
+      # ═══ 搜索节奏 ═══
+      CONFIG_SEARCH_DELAY_MIN: '30sec'
+      CONFIG_SEARCH_DELAY_MAX: '1min'
+
+      # ═══ 风控（v4 新增 Bot 欺诈检测，默认遇到警告即停，按需开启） ═══
+      #CONFIG_CONTINTUE_ON_BOT_WARNING: 'false'
+
+    # ---------- 健康检查（v4 镜像内置 healthcheck.sh） ----------
+    healthcheck:
+      test: ['CMD-SHELL', 'scripts/docker/healthcheck.sh']
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+    # 禁用 IPv6（设备 IPv6 不可达，Chromium 等待 IPv6 超时导致资源加载极慢）
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=1
+      - net.ipv6.conf.default.disable_ipv6=1
+
+    security_opt:
+      - no-new-privileges:true

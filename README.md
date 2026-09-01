@@ -160,6 +160,29 @@ sh deploy.sh /root/microsoft-rewards
 
 ---
 
+---
+
+## 🆕 v4 迁移（2026-09-01 完成）
+
+> 上游已从 v3 全面转向 **v4.3.2（V4-china 分支）**，v3.1.6.4 停更。本仓库新增 `v4/` 目录，记录 ARM64 环境迁移 v4 的完整方案（已在本环境 4 实例全部落地）。
+
+| 文件 | 内容 |
+|---|---|
+| `v4/ARM-ADAPT.md` | v4.3.2 ARM 本地适配清单（npmmirror / PLAYWRIGHT_DOWNLOAD_HOST / Login 加固 / EmailLogin 超时 / bootstrap commit 导航） |
+| `v4/MIGRATION.md` | v3 → v4 迁移步骤（备份→构建→试点→切换→回滚） |
+| `v4/docker-compose.yml` | v4 部署模板（v4 挂载路径、`CONFIG_SEARCH_QUERY_ENGINES`、IPv6 sysctls、镜像 `microsoft-rewards-v4:local`） |
+| `v4/migrate-v3-session.js` | v3 JSON 会话 → v4 SQLite 迁移脚本（`docker exec <容器> node /usr/src/microsoft-rewards-script/sessions/migrate.js <email>`） |
+
+**实测结果**（同账号同日对比）：v3 +110 分/169 分钟 → **v4 +193 分/110 分钟**（移动端读文/App 任务全量拿到）。
+
+**v4 关键差异**：
+- 会话存储从 JSON 文件改为 **SQLite**（`sessions/sessions.db`），旧会话需用 `migrate-v3-session.js` 迁移（cookies 格式兼容，指纹同结构）
+- 配置键名：`CONFIG_SEARCH_QUERY_ENGINES`（不是 v3 的 `CONFIG_QUERY_ENGINES`）
+- 挂载路径：`./config → $SCRIPT_DIR/config`、`./sessions → $SCRIPT_DIR/sessions`
+- 弱网必需适配：bootstrap `page.goto` 改 `waitUntil:'commit'`（domcontentloaded 在弱网下 120s+ 不触发，HTML 数据改由 `fetchBootstrapHtml` 直取）
+
+---
+
 ## 📜 License
 
 基于上游 GPL-3.0-or-later 项目，本仓库同样适用 GPL-3.0。使用自动化脚本可能导致微软账号被暂停，风险自负。
