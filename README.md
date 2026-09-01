@@ -160,11 +160,9 @@ sh deploy.sh /root/microsoft-rewards
 
 ---
 
----
+## 🆕 v4 迁移（2026-09-01 完成，4 实例全部落地）
 
-## 🆕 v4 迁移（2026-09-01 完成）
-
-> 上游已从 v3 全面转向 **v4.3.2（V4-china 分支）**，v3.1.6.4 停更。本仓库新增 `v4/` 目录，记录 ARM64 环境迁移 v4 的完整方案（已在本环境 4 实例全部落地）。
+> 上游已从 v3 全面转向 **v4.3.2（V4-china 分支）**，v3.1.6.4 停更。本仓库新增 `v4/` 目录，记录 ARM64 环境迁移 v4 的完整方案（已在本环境 4 实例全部落地，v3 会话零损失迁入 v4 SQLite）。
 
 | 文件 | 内容 |
 |---|---|
@@ -175,11 +173,21 @@ sh deploy.sh /root/microsoft-rewards
 
 **实测结果**（同账号同日对比）：v3 +110 分/169 分钟 → **v4 +193 分/110 分钟**（移动端读文/App 任务全量拿到）。
 
+**迁移状态（2026-09-01）**：4 实例全部切换 `microsoft-rewards-v4:local`，各自原 cron 错峰运行（00:00 / 04:00 / 09:00 / 14:00 CST），v3 镜像保留可回滚；备份：迁移前/后双快照（含 v3 会话 JSON 与 v4 sessions.db）。
+
 **v4 关键差异**：
 - 会话存储从 JSON 文件改为 **SQLite**（`sessions/sessions.db`），旧会话需用 `migrate-v3-session.js` 迁移（cookies 格式兼容，指纹同结构）
 - 配置键名：`CONFIG_SEARCH_QUERY_ENGINES`（不是 v3 的 `CONFIG_QUERY_ENGINES`）
 - 挂载路径：`./config → $SCRIPT_DIR/config`、`./sessions → $SCRIPT_DIR/sessions`
 - 弱网必需适配：bootstrap `page.goto` 改 `waitUntil:'commit'`（domcontentloaded 在弱网下 120s+ 不触发，HTML 数据改由 `fetchBootstrapHtml` 直取）
+
+**通知管道适配（watcher 兼容 v4，2026-09-01）**：
+- v4 的 RUN-END 字段名与 v3 不同（`获得积分=` vs `总收集积分:`、`原余额/现余额` vs `原始总计/新总计` 等）→ watcher 已改**双格式解析**，通知邮件积分/余额/时长完整
+- 异常检测关键字补充：`Script failed`（v4 英文版 run_daily.sh）、`致命错误`（v4 严重错误标记）
+- 实测：重置 state 重发通知验证通过（193 分 / 3059→3252 / 110.5 分钟）
+- 原 v3 格式脚本备份：`watcher_notify.sh.bak-v3-format`
+
+**构建优化（待启用）**：Dockerfile 中 `COPY . .` 位于依赖层之前，任何源码改动会连带重跑 npm ci 与 110MiB Chromium 下载（单次重建 45-60 分钟）；可将 `PLAYWRIGHT_BROWSERS_PATH` 指向独立目录并将 `patchright install` 前移至 `COPY . .` 之前，重建降至 tsc + 导出 ≈25 分钟。
 
 ---
 
