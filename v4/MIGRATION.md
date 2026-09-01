@@ -1,4 +1,4 @@
-# v3 → v4.3.2 迁移步骤（<SERVER-IP> Podroid）
+# v3 → v4.3.2 迁移步骤（Podroid ARM64 服务器）
 
 > 原则：**先备份、后构建、再试点、逐步切换、随时回滚**。全程不碰运行中的 v3 容器，直到试点通过。
 
@@ -37,7 +37,7 @@ tail -f /root/mrs-v4-build.log   # 观察，直到出现 BUILD_EXIT 或 "naming 
 
 构建失败的常见点：npm 网络（npmmirror 已适配）、patchright 浏览器下载（镜像已适配）、apt 源（daocloud 基础镜像）。
 
-## 阶段 2：试点（选 microsoft-rewards-4，账号 <ACCOUNT-EMAIL>）
+## 阶段 2：试点（选一个实例，如 microsoft-rewards-4）
 
 ```sh
 cd /root/microsoft-rewards-4

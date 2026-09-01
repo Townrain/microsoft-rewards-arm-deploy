@@ -8,7 +8,12 @@ const path = require('path')
 const { DatabaseSync } = require('node:sqlite')
 
 const SESSIONS_DIR = '/usr/src/microsoft-rewards-script/sessions'
-const EMAIL = process.argv[2] || '<ACCOUNT-EMAIL>'
+// 用法: node migrate.js <账号邮箱>  （必传，例如 node migrate.js your-account@outlook.com）
+const EMAIL = process.argv[2]
+if (!EMAIL) {
+    console.error('[migrate] 用法: node migrate.js <账号邮箱>')
+    process.exit(1)
+}
 const emailDir = path.join(SESSIONS_DIR, EMAIL)
 
 if (!fs.existsSync(emailDir)) {

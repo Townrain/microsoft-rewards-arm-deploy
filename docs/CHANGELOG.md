@@ -44,7 +44,7 @@
 
 ### ?? 维护要点（重要）
 1. **重建容器会还原 entrypoint.sh**（saveFingerprint 回 false）→ 需重打 sed
-2. **会话会过期**（SID 有时效）→ 过期后需用 Playwright MCP 重新登录 zj（邮箱 <ACCOUNT-EMAIL> + TOTP）→ 访问 cn.bing.com 搜索一次 + 访问 www.msn.cn（触发 .msn.cn SID）→ 导出 cookies（走本地 http server 通道）→ 部署 session_desktop.json
+2. **会话会过期**（SID 有时效）→ 过期后需用 Playwright MCP 重新登录（账号邮箱 + TOTP）→ 访问 cn.bing.com 搜索一次 + 访问 www.msn.cn（触发 .msn.cn SID）→ 导出 cookies（走本地 http server 通道）→ 部署 session_desktop.json
 3. 指纹文件无需更新（UA 固定）
 4. 本地 cookie server 脚本：cookie-server2.js（18766 端口，POST /save）
 
